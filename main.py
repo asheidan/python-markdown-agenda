@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+import argparse
 import glob
 import itertools
 import os
 import re
+import sys
 from typing import Iterable
 from typing import Iterator
 from typing import Tuple
@@ -44,35 +46,90 @@ def handle_content(datestr: str, lines: list[str]) -> Generator[Tuple[str, str],
                         for m in LINK_PATTERN.findall(line))
 
 
+def date_key(element: Tuple[str, str]) -> str:
+
+    return element[0].split('/', maxsplit=1)[0]
+
+
 def group_by_date(tuples: Iterable[Tuple[str, str]]) -> None:
-    current_set: set[str] = set()
-    current_date: str = ""
+    sorted_tuples = sorted(tuples, key=date_key)
+    grouped_tuples = itertools.groupby(sorted_tuples, key=date_key)
 
-    for header_path, link in sorted(tuples):
-        datestr, *_ = header_path.split('/', maxsplit=1)
+    for datestr, group in grouped_tuples:
+        unique_links = set(link for _, link in group)
+        display_as_tree(datestr, unique_links)
 
-        if current_date != datestr:
-            if current_set:
-                display_by_date(current_date, current_set)
-
-            current_date = datestr
-            current_set = set()
-
-        current_set.add(link)
+    return
 
 
-def display_by_date(datestr: str, links: Iterable[str]):
-    print(f"\n- {datestr}")
-    for link in sorted(links):
+def link_key(element: Tuple[str, str]) -> str:
+
+    return element[1]
+
+
+def group_by_link(tuples: Iterable[Tuple[str, str]]) -> None:
+    sorted_tuples = sorted(tuples, key=link_key)
+    grouped_tuples = itertools.groupby(sorted_tuples, key=link_key)
+
+    for linkstr, group in grouped_tuples:
+        unique_dates = set(map(date_key, group))
+        display_as_tree(linkstr, unique_dates)
+
+    return
+
+
+def display_as_tree(mainitem: str, subitems: Iterable[str]):
+    print(f"\n- {mainitem}")
+    for link in sorted(subitems):
         print(f"  - {link}")
 
 
+class argument_converter:
+    """Convenience class to wrap argument conversions."""
+
+    def __init__(self, **conversions):
+        self.conversions = conversions
+
+    def convert(self, arg) -> None:
+        conversions = self.conversions
+
+        if arg in conversions:
+
+            return conversions[arg]
+
+        message = "invalid choice: {!r} ( choose from {})"
+        choices = ", ".join(sorted(repr(choice) for choice in conversions.keys()))
+
+        raise argparse.ArgumentTypeError(message.format(arg, choices))
+
+    def __iter__(self):
+        yield from self.conversions.keys()
+
+
+def parse_arguments(args) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+
+    output_group = parser.add_argument_group('output')
+
+    group_by_alternatives = argument_converter(date=group_by_date, link=group_by_link)
+    output_group.add_argument('--group-by', default='date',
+                              choices=group_by_alternatives)
+
+    result = parser.parse_args(args)
+    result.group_by = group_by_alternatives.convert(result.group_by)
+
+    return result
+
+
 def main() -> None:
+    options = parse_arguments(args=sys.argv[1:])
+    print(options.group_by)
+
     paths = files(path=NOTES_DIR)
     file_content = (read_file(path) for path in paths)
     filtered_content = (handle_content(*file_result) for file_result in file_content)
 
-    group_by_date(itertools.chain(*filtered_content))
+    options.group_by(itertools.chain(*filtered_content))
 
 
 if __name__ == "__main__":
