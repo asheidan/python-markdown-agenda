@@ -6,6 +6,8 @@ import itertools
 import os
 import re
 import sys
+from datetime import date
+from datetime import timedelta
 from typing import Iterable
 from typing import Iterator
 from typing import Tuple
@@ -14,6 +16,8 @@ from typing import Generator
 
 NOTES_DIR = "~/Documents/Brain/Daily"
 LINK_PATTERN = re.compile(r'(?<=\[\[)[^]]*(?=\]\])')
+
+LinkLocation = Tuple[str, str]
 
 
 def files(path: str = NOTES_DIR) -> Iterator[str]:
@@ -31,7 +35,7 @@ def read_file(path: str) -> Tuple[str, list[str]]:
         return datestring, file.readlines()
 
 
-def handle_content(datestr: str, lines: list[str]) -> Generator[Tuple[str, str], None, None]:
+def handle_content(datestr: str, lines: list[str]) -> Generator[LinkLocation, None, None]:
     current_path = [datestr]
     for line in lines:
         if line[0] == '#':
@@ -46,33 +50,38 @@ def handle_content(datestr: str, lines: list[str]) -> Generator[Tuple[str, str],
                         for m in LINK_PATTERN.findall(line))
 
 
-def date_key(element: Tuple[str, str]) -> str:
+def date_from_filepath(path: str) -> str:
 
-    return element[0].split('/', maxsplit=1)[0]
+    return os.path.splitext(os.path.basename(path))[0]
 
 
-def group_by_date(tuples: Iterable[Tuple[str, str]]) -> None:
-    sorted_tuples = sorted(tuples, key=date_key)
-    grouped_tuples = itertools.groupby(sorted_tuples, key=date_key)
+def date_from_location(location: LinkLocation) -> str:
 
-    for datestr, group in grouped_tuples:
+    return location[0].split('/', maxsplit=1)[0]
+
+
+def link_from_location(location: LinkLocation) -> str:
+
+    return location[1]
+
+
+def group_by_date(locations: Iterable[LinkLocation]) -> None:
+    sorted_locations = sorted(locations, key=date_from_location)
+    grouped_locations = itertools.groupby(sorted_locations, key=date_from_location)
+
+    for datestr, group in grouped_locations:
         unique_links = set(link for _, link in group)
         display_as_tree(datestr, unique_links)
 
     return
 
 
-def link_key(element: Tuple[str, str]) -> str:
+def group_by_link(locations: Iterable[LinkLocation]) -> None:
+    sorted_locations = sorted(locations, key=link_from_location)
+    grouped_locations = itertools.groupby(sorted_locations, key=link_from_location)
 
-    return element[1]
-
-
-def group_by_link(tuples: Iterable[Tuple[str, str]]) -> None:
-    sorted_tuples = sorted(tuples, key=link_key)
-    grouped_tuples = itertools.groupby(sorted_tuples, key=link_key)
-
-    for linkstr, group in grouped_tuples:
-        unique_dates = set(map(date_key, group))
+    for linkstr, group in grouped_locations:
+        unique_dates = set(map(date_from_location, group))
         display_as_tree(linkstr, unique_dates)
 
     return
@@ -107,26 +116,47 @@ class argument_converter:
 
 
 def parse_arguments(args) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    output_group = parser.add_argument_group('output')
+    deferred_conversions = []
+
+    filter_group = parser.add_argument_group('filter')  ###############
+
+    
+    filter_start = date.today() - timedelta(days=7)
+    filter_group.add_argument('--from',metavar='DATE', default=filter_start.isoformat(),
+                              dest="from_date",
+                              help="Do not include files from before this date.")
+
+    filter_group.add_argument('--to',metavar='DATE',
+                              dest="to_date",
+                              help="Do not include files from after this date.")
+
+    output_group = parser.add_argument_group('output')  ###############
 
     group_by_alternatives = argument_converter(date=group_by_date, link=group_by_link)
     output_group.add_argument('--group-by', default='date',
-                              choices=group_by_alternatives)
+                              choices=group_by_alternatives,
+                              help="Group the output by.")
+    deferred_conversions.append(('group_by', group_by_alternatives))
 
     result = parser.parse_args(args)
-    result.group_by = group_by_alternatives.convert(result.group_by)
+    for attr_name, conversion in deferred_conversions:
+        converted_result = conversion.convert(getattr(result, attr_name))
+        setattr(result, attr_name, converted_result)
 
     return result
 
 
 def main() -> None:
     options = parse_arguments(args=sys.argv[1:])
-    print(options.group_by)
 
-    paths = files(path=NOTES_DIR)
-    file_content = (read_file(path) for path in paths)
+    paths: Iterable[str] = files(path=NOTES_DIR)
+    filtered_paths: Iterable[str] = (path for path in paths
+                                     if (not options.from_date or (date_from_filepath(path) >= options.from_date))
+                                        and (not options.to_date or (date_from_filepath(path) <= options.to_date)))
+
+    file_content = (read_file(path) for path in filtered_paths)
     filtered_content = (handle_content(*file_result) for file_result in file_content)
 
     options.group_by(itertools.chain(*filtered_content))
